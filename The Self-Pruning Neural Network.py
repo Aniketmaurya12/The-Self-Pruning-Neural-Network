@@ -28,17 +28,6 @@ print(f"Using device: {DEVICE}")
 # 1. Custom Prunable Linear Layer
 # ─────────────────────────────────────────────
 class PrunableLinear(nn.Module):
-    """
-    A drop-in replacement for nn.Linear that includes learnable gate_scores.
-
-    Each weight element has a corresponding gate_score. During forward pass:
-      gate = sigmoid(gate_scores)          # squash to (0, 1)
-      pruned_weight = weight * gate        # element-wise masking
-      output = pruned_weight @ input + bias
-
-    During training the sparsity loss (L1 of gates) encourages gate values
-    to approach 0, effectively pruning unnecessary connections.
-    """
 
     def __init__(self, in_features: int, out_features: int, bias: bool = True):
         super().__init__()
@@ -49,8 +38,6 @@ class PrunableLinear(nn.Module):
         self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
         self.bias = nn.Parameter(torch.Tensor(out_features)) if bias else None
 
-        # Learnable gate scores — same shape as weight, initialised near 1
-        # so gates start open and the network learns to close them
         self.gate_scores = nn.Parameter(torch.Tensor(out_features, in_features))
 
         self._init_parameters()
@@ -62,15 +49,12 @@ class PrunableLinear(nn.Module):
             fan_in, _ = nn.init._calculate_fan_in_and_fan_out(self.weight)
             bound = 1 / np.sqrt(fan_in) if fan_in > 0 else 0
             nn.init.uniform_(self.bias, -bound, bound)
-        # Initialise gate_scores to ~1.0 → sigmoid ≈ 0.73 (most gates open)
         nn.init.constant_(self.gate_scores, 1.0)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Compute soft gates via sigmoid; gradients flow through gate_scores
-        gates = torch.sigmoid(self.gate_scores)          # shape: (out, in)
+        gates = torch.sigmoid(self.gate_scores)          
 
-        # Element-wise pruning: zero out connections whose gate is near 0
-        pruned_weight = self.weight * gates               # shape: (out, in)
+        pruned_weight = self.weight * gates               
 
         # Standard linear transformation with pruned weights
         return F.linear(x, pruned_weight, self.bias)
@@ -99,9 +83,9 @@ class SelfPruningNet(nn.Module):
     def __init__(self):
         super().__init__()
         self.flatten = nn.Flatten()
-        self.fc1 = PrunableLinear(32 * 32 * 3, 512)   # 3072 → 512
+        self.fc1 = PrunableLinear(32 * 32 * 3, 512)   
         self.relu = nn.ReLU()
-        self.fc2 = PrunableLinear(512, 10)              # 512  → 10
+        self.fc2 = PrunableLinear(512, 10)              
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.flatten(x)
@@ -126,22 +110,8 @@ def compute_total_loss(
     model: SelfPruningNet,
     lam: float,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Total Loss = CrossEntropyLoss(logits, targets) + λ * Σ||gates||₁
-
-    Args:
-        logits:  Raw model outputs  (batch, 10)
-        targets: Ground-truth class indices  (batch,)
-        model:   SelfPruningNet instance
-        lam:     Sparsity regularisation strength λ
-
-    Returns:
-        total_loss, classification_loss, sparsity_loss
-    """
-    # Classification loss
     cls_loss = F.cross_entropy(logits, targets)
 
-    # Sparsity loss: L1 norm of all gate values across every PrunableLinear layer
     sparsity_loss = torch.tensor(0.0, device=logits.device)
     for layer in model.prunable_layers():
         gates = torch.sigmoid(layer.gate_scores)
@@ -190,19 +160,7 @@ def train_model(
     num_epochs: int = 10,
     lr: float = 1e-3,
 ) -> list[dict]:
-    """
-    Train the self-pruning network.
-
-    Args:
-        model:        SelfPruningNet to train (already on DEVICE)
-        train_loader: DataLoader for training data
-        lam:          Sparsity regularisation strength λ
-        num_epochs:   Number of training epochs
-        lr:           Adam learning rate
-
-    Returns:
-        List of per-epoch metric dicts.
-    """
+    
     optimizer = optim.Adam(model.parameters(), lr=lr)
     history = []
 
@@ -254,14 +212,6 @@ def evaluate_model(
     test_loader: DataLoader,
     sparsity_threshold: float = 1e-2,
 ) -> dict:
-    """
-    Compute test accuracy and sparsity level.
-
-    Sparsity = % of gate values below `sparsity_threshold`.
-
-    Returns:
-        Dict with 'accuracy' (%) and 'sparsity' (%).
-    """
     model.eval()
     correct = total = 0
 
